@@ -2,7 +2,7 @@
 An implementation of the "Flow-Based Image Abstraction" article methods by Henry Kang et al.
 
 Article method scheme:
-[Article method scheme](docs/scheme.png?raw=true)
+![Article method scheme](docs/scheme.png?raw=true)
 
 ## OpenCV Installation (by [@AdeilsonSilva](https://github.com/AdeilsonSilva/))
 #### INSTALL REQUIRED PACKAGES #####
