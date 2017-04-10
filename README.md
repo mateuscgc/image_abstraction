@@ -61,3 +61,10 @@ $ sudo gedit /etc/bash.bashrc
 PKG_CONFIG_PATH=$PKG_CONFIG_PATH:/usr/local/lib/pkgconfig
 export PKG_CONFIG_PATH
 ```
+
+## Lime installation (LIC)
+
+This library will be used to visualize the ETF using line integral convolution. Clone the [Lime repository](https://github.com/tatsy/lime) in project root folder.
+```
+git clone https://github.com/tatsy/lime.git
+```

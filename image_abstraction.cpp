@@ -56,25 +56,18 @@ struct mat2d {
     vector< vector<vec2d> > vecs;
     mat2d(Mat gx, Mat gy) {
         Scalar intensity;
-        // cout << gx.rows << " " << gx.cols << endl;
-        // cout << gy.rows << " " << gy.cols << endl;
         int n = gx.rows;
         int m = gx.cols;
         for(int i = 0; i < n; i++) {
             vecs.push_back(vector<vec2d>());
             for(int j = 0; j < m; j++) {
                 vec2d vec;
-                // cout << "( ";
-                intensity = gx.at<uchar>(i, j);
-                vec.x = (double)intensity.val[0];
+                vec.x = gx.at<double>(i,j);
                 // cout << "(" << vec.x; 
-                    // cout << vec.x;
 
-                intensity = gy.at<uchar>(i, j);
-                vec.y = (double)intensity.val[0];
+                vec.y = gy.at<double>(i,j);
                 // cout << ", " << vec.y << ") ";
 
-                // cout << " ) ";
                 vecs[i].push_back(vec);
             }
             // cout << endl;
@@ -87,6 +80,71 @@ struct mat2d {
             }
         }
     }
+    vector< vector<double> > coord(char c) {
+        vector< vector<double> > ans;
+        for(int n = vecs.size(), i = 0; i < n; i++) {
+            ans.push_back(vector<double>());
+            for(int m = vecs[i].size(), j = 0; j < m; j++) {
+                ans[i].push_back((c == 'x' ? vecs[i][j].x : vecs[i][j].y));
+            }
+        }
+        return ans;
+    }
+    vector< vector<double> > x() { return this->coord('x'); }
+    vector< vector<double> > y() { return this->coord('y'); }
+
+    vector< vector<double> > angle() {
+        vector< vector<double> > ans;
+        for(int n = vecs.size(), i = 0; i < n; i++) {
+            ans.push_back(vector<double>());
+            for(int m = vecs[i].size(), j = 0; j < m; j++) {
+                ans[i].push_back(fmod(atan2(vecs[i][j].y, vecs[i][j].x)+M_PI, M_PI)/M_PI);
+                // cout << "(" << vecs[i][j].y << ", " << vecs[i][j].x << ") " << fmod(atan2(vecs[i][j].y, vecs[i][j].x)+M_PI, M_PI)/M_PI << " ";
+            }
+            // cout << endl;
+        }
+        return ans;
+    }
+    Mat get_mat_coord(char coord) {
+        vector< vector<double> > c;
+        if(coord == 'x')
+            c = x();
+        else if(coord == 'y')
+            c = y();
+        else
+            c = angle();
+        Mat mat(c.size(), c.at(0).size(), CV_64FC1);
+        for(int i=0; i<mat.rows; ++i)
+            for(int j=0; j<mat.cols; ++j)
+                mat.at<double>(i, j) = c[i][j];
+
+        return mat;
+    }
+    Mat get_mat_x() { return get_mat_coord('x'); }
+    Mat get_mat_y() { return get_mat_coord('y'); }
+    Mat get_mat_angle() { return get_mat_coord('a'); }
+    Mat get_mat() {
+        Mat mat;
+        vector<cv::Mat> marray = { get_mat_x(), get_mat_y() };
+        merge(marray.data(), marray.size(), mat);
+        return mat;
+    }
+    Mat LIC() {
+        Mat mat = get_mat();
+        Mat vfield(mat.rows, mat.cols, CV_32FC2);
+        for (int y = 0; y < mat.rows; y++) {
+            for (int x = 0; x < mat.cols; x++) {
+                Vec2d theta = mat.at<Vec2d>(y, x);
+                vfield.at<float>(y, x * 2 + 0) = static_cast<float>(theta[0]);
+                vfield.at<float>(y, x * 2 + 1) = static_cast<float>(theta[1]);
+            }
+        }
+
+        Mat noise, lic;
+        lime::randomNoise(noise, cv::Size(mat.cols, mat.rows));
+        lime::LIC(noise, lic, vfield, 20, lime::LIC_RUNGE_KUTTA);
+        return lic;
+    }
 };
 
 Mat preprocess(Mat src) {
@@ -98,31 +156,28 @@ Mat preprocess(Mat src) {
     return src;
 }
 
-mat2d sobel(Mat src_gray) {
-    int scale = 1;
-    int delta = 0;
-    int ddepth = CV_16S;
-    Mat grad, grad_x, grad_y;
-    Mat abs_grad_x, abs_grad_y;
+mat2d sobel(Mat src_gray, Mat& mag) {
+    int ddepth = CV_64F;
+    Mat grad_x, grad_y;
+    // Mat abs_grad_x, abs_grad_y;
 
     /// Gradient X
-    Sobel( src_gray, grad_x, ddepth, 1, 0, 3, scale, delta, BORDER_DEFAULT );
-    // imshow( "Sobel_x", grad_x );
-    convertScaleAbs( grad_x, abs_grad_x );
-    imshow( "Sobel_x", abs_grad_x );
+    Sobel( src_gray, grad_x, ddepth, 1, 0, 3);
+    // convertScaleAbs( grad_x, abs_grad_x );
+    // imshow( "Sobel_x", abs_grad_x );
 
     /// Gradient Y
-    Sobel( src_gray, grad_y, ddepth, 0, 1, 3, scale, delta, BORDER_DEFAULT );
-    // imshow( "Sobel_y", grad_y );
-    convertScaleAbs( grad_y, abs_grad_y );
-    imshow( "Sobel_y", abs_grad_y );
-
-
-    mat2d gmap(grad_x, grad_y);
+    Sobel( src_gray, grad_y, ddepth, 0, 1, 3);
+    // convertScaleAbs( grad_y, abs_grad_y );
+    // imshow( "Sobel_y", abs_grad_y );
 
     /// Total Gradient (approximate)
-    addWeighted( abs_grad_x, 0.5, abs_grad_y, 0.5, 0, grad );
-    imshow( "Sobel", grad );
+    mag = Mat(grad_x.rows, grad_x.cols, CV_64FC1);
+    magnitude( grad_x, grad_y, mag );
+    normalize(mag, mag, 1.0, 0.0, cv::NORM_MINMAX);
+    imshow( "Sobel", mag );
+
+    mat2d gmap(grad_x, grad_y);
 
     return gmap;
 }
@@ -153,7 +208,7 @@ double wd(vec2d c, vec2d n) {
     return fabs(dot_product(c,n));
 }
 
-mat2d ETF_iteration(mat2d tn, const vector< vector<double> >& mag) {
+mat2d ETF_iteration(mat2d tn, const Mat& mag) {
     mat2d tn1 = tn;
     for(int sn = tn.vecs.size(), i = KERNEL_SIZE; i < sn-KERNEL_SIZE; i++) {
         for(int sm = tn.vecs[i].size(), j = KERNEL_SIZE; j < sm-KERNEL_SIZE; j++) {
@@ -164,7 +219,6 @@ mat2d ETF_iteration(mat2d tn, const vector< vector<double> >& mag) {
 
             for(int di = -KERNEL_SIZE; di <= KERNEL_SIZE; di++) {
                 for(int dj = -KERNEL_SIZE; dj <= KERNEL_SIZE; dj++) {
-                    // cout << di << " " << dj << endl;
                     if(di != 0 || dj != 0) {
                         vec2d neighbor_vec = tn.vecs[i+di][j+dj];
 
@@ -172,9 +226,8 @@ mat2d ETF_iteration(mat2d tn, const vector< vector<double> >& mag) {
                         new_vec += sign(center_vec, neighbor_vec)
                                     *neighbor_vec
                                     *ws(i, j, i+di, j+dj)
-                                    *wm(mag[i][j], mag[i+di][j+dj])
+                                    *wm(mag.at<double>(i, j), mag.at<double>(i+di, j+dj))
                                     *wd(center_vec, neighbor_vec);
-                    // cout << di << " " << dj << endl;
                     }
                 }
             }
@@ -186,99 +239,78 @@ mat2d ETF_iteration(mat2d tn, const vector< vector<double> >& mag) {
     return tn1;
 }
 
-mat2d ETF(mat2d t0, int num_iterations, mat2d grad) {
-    grad.normalize();
-    vector< vector<double> > mag;
-    for(int n = grad.vecs.size(), i = 0; i < n; i++) {
-        mag.push_back(vector<double>());
-        for(int m = grad.vecs[i].size(), j = 0; j < m; j++) {
-            mag[i].push_back(grad.vecs[i][j].length());
-
-            // cout << "(" << grad.vecs[i][j].x << ", " << grad.vecs[i][j].y << ") ";
-            // cout << mag[i][j] << " ";
-        }
-        // cout << endl;
-    }
+mat2d ETF(const mat2d& t0, int num_iterations, const Mat& mag) {
 
     mat2d tni = t0;
-    for(int ni = 0; ni < num_iterations; ni++) {
+    for(int ni = 1; ni <= num_iterations; ni++) {
         tni = ETF_iteration(tni, mag);
+
+        Mat lic = tni.LIC();
+
+        imshow("ETF "+to_string(ni), lic);
     }
     return tni;
 }
 
 mat2d get_init_t(mat2d grad) {
+
     for(int n = grad.vecs.size(), i = 0; i < n; i++) {
         for(int m = grad.vecs[i].size(), j = 0; j < m; j++) {
             double aux = grad.vecs[i][j].x;
             grad.vecs[i][j].x = grad.vecs[i][j].y;
-            grad.vecs[i][j].y = -aux;
+            grad.vecs[i][j].y = -1*aux;
         }
     }
+
     grad.normalize();
+
+    Mat init = grad.LIC();
+
+    imshow("Initial t", init);
+
     return grad;
+}
+
+cv::Mat drawimg64(const cv::Mat &m) {
+    cv::Mat n;
+    m.convertTo(n, CV_8UC1, 255, 0);
+    return n;
 }
 
 /** @function main */
 int main( int argc, char** argv ) {
 
-    // string window_name = "Sobel Demo - Simple Edge Detector";
-
     /// Load an image
     Mat original = imread( argv[1] );
-    Mat fm;
-
-    original.convertTo(fm,CV_32F);
 
     if( !original.data )
     { return -1; }
 
     /// Create windows
     namedWindow( "Original", CV_WINDOW_AUTOSIZE );
-    namedWindow( "Sobel", CV_WINDOW_AUTOSIZE );
 
-    Mat gray = preprocess(original);
-    gray.convertTo(fm,CV_32F);
-    //gray.convertTo(gray, CV_64FC1);
-
-    mat2d grad = sobel(preprocess (original));
+    Mat gray = preprocess (original);
+    Mat mag;
+    mat2d grad = sobel(gray, mag);
     mat2d t0 = get_init_t(grad);
-    
-    // cout << grad.vecs[425][148].x << " " << grad.vecs[425][148].y << endl;
-    // cout << t0.vecs[425][148].x << " " << t0.vecs[425][148].y << endl;
 
-    mat2d etf = ETF(t0, 3, grad);
+    mat2d etf = ETF(t0, 3, mag);
 
-    for(int n = etf.vecs.size(), i = 0; i < n; i++) {
-        for(int n = etf.vecs[i].size(), j = 0; j < n; j++) {
-            cout << "(" << etf.vecs[i][j].x << ",  " << etf.vecs[i][j].y << ") ";
-        }
-        cout << endl;
-    }
+    // for(int n = etf.vecs.size(), i = 0; i < n; i++) {
+    //     for(int n = etf.vecs[i].size(), j = 0; j < n; j++) {
+    //         cout << "(" << etf.vecs[i][j].x << ",  " << etf.vecs[i][j].y << ") ";
+    //     }
+    //     cout << endl;
+    // }
+
+    // Mat etfa = etf.get_mat_angle();
+    // imshow("ETF ANGLE", etfa);
 
     imshow( "Original", original );
-    // imshow( "Sobel", sobe );
 
-    Mat final;
-    Mat tangent(etf.vecs);
-
-    vector< vector< pair<double, double> > > test;
-
-    for(int n = etf.vecs.size(), i = 0; i < n; i++) {
-        test.push_back(vector< pair<double, double> >());
-        for(int n = etf.vecs[i].size(), j = 0; j < n; j++) {
-            //cout << "(" << etf.vecs[i][j].x << ",  " << etf.vecs[i][j].y << ") ";
-            //Scalar intensity = tangent.at<uchar>(i, j);
-            test[i].push_back(pair<double, double>(etf.vecs[i][j].x, etf.vecs[i][j].y));
-            //cout << tangent.at<double>(i,j) << " " << " ";
-            //f.at<double>(i,j)
-        }
-        //cout << endl;
-    }
-    int sz = test.size()*2;
-    //lime::LIC(fm, final, Mat(test), sz, lime::LIC_EULERIAN);
-
-    //imshow( "final", final );
+    // Mat lic = etf.LIC();
+    // imshow( "Final", lic );
+    // imwrite("etf_"+string(argv[1]), drawimg64(lic));
 
     waitKey(0);
 }
