@@ -11,6 +11,8 @@ using namespace std;
 
 #define KERNEL_SIZE 5
 
+string img_name;
+
 struct vec2d {
     double x,y;
     vec2d() {}
@@ -41,6 +43,12 @@ struct vec2d {
         this->x += rhs.x;
         this->y += rhs.y;
         return *this;
+    }
+    double angle(double signal) const {
+        return atan2(signal*y, signal*x);
+    }
+    double perp(double signal) const {
+        return atan2(signal*x, signal*-y);
     }
 };
 
@@ -147,6 +155,12 @@ struct mat2d {
     }
 };
 
+cv::Mat drawimg64(const cv::Mat &m) {
+    cv::Mat n;
+    m.convertTo(n, CV_8UC1, 255, 0);
+    return n;
+}
+
 Mat preprocess(Mat src) {
     GaussianBlur( src, src, Size(3,3), 0, 0, BORDER_DEFAULT );
 
@@ -248,6 +262,7 @@ mat2d ETF(const mat2d& t0, int num_iterations, const Mat& mag) {
         Mat lic = tni.LIC();
 
         imshow("ETF "+to_string(ni), lic);
+        imwrite("ETF_"+to_string(ni)+"_"+img_name, drawimg64(lic));
     }
     return tni;
 }
@@ -271,17 +286,130 @@ mat2d get_init_t(mat2d grad) {
     return grad;
 }
 
-cv::Mat drawimg64(const cv::Mat &m) {
-    cv::Mat n;
-    m.convertTo(n, CV_8UC1, 255, 0);
-    return n;
+pair<int, int> flow_neighbor(double angle) {
+    double limits[] = { 0, 45, 90, 135, 180, -135, -90, -45 };
+    vector< pair<int, int> > d = { {0,1}, {-1,1}, {-1,0}, {-1,-1}, {0,-1}, {1,-1}, {1,0}, {1,1} };
+    int closest = 0;
+    for(int i = 0; i < 8; i++) {
+        if(abs(angle-limits[i]) < abs(angle-limits[closest]))
+            closest = i;
+    }
+    return d[closest];
 }
+
+double gaussian(int s, double sig) {
+    return (1/sqrt(2*M_PI*sig))*pow(M_E, -(s*s)/(2*0.58*sig));
+}
+
+double spatial_weight(int s, double sig) {
+    return gaussian(s, sig);
+}
+
+double color_dist(Vec3d c1, Vec3d c2) {
+    // GBR
+    double dr = c1[2]-c2[2];
+    double dg = c1[0]-c2[0];
+    double db = c1[1]-c2[1];
+    return sqrt(2*(dr*dr) + 4*(dg*dg) + 3*(db*db));
+}
+
+double similarity_weight(Vec3d c1, Vec3d c2, double sig) {
+    return gaussian(color_dist(c1, c2), sig);
+}
+
+
+Mat FBL_iteration(const Mat& img, const mat2d& etf) {
+    Mat smoothed = img;
+    for(int sn = img.rows, i = 0; i < sn; i++) {
+        for(int sm = img.cols, j = 0; j < sm; j++) {
+
+            // vec2d new_vec(0,0);
+            // vec2d center_vec = tn.vecs[i][j];
+            double sig = 2.0;
+
+            double ve = spatial_weight(0, sig)*similarity_weight(img.at<Vec3d>(i,j), img.at<Vec3d>(i,j), sig);
+            Vec3d new_c = img.at<Vec3d>(i,j)*ve;
+
+            for(double m = -1; m <= 1; m += 2) {
+                int di = i, dj = j;
+                for(int s = 1; s <= KERNEL_SIZE; s++) {
+                    double angle = etf.vecs[di][dj].angle(m);
+                    // cout << "angle " << s*m << " " << angle*180/M_PI << endl;
+                    pair<int, int> d = flow_neighbor(angle*180/M_PI);
+                    
+                    di += d.first;
+                    dj += d.second;
+                    if(di >= 0 && di < img.rows && dj >= 0 && dj < img.cols) {
+                        double weight = spatial_weight(s*m, sig)*similarity_weight(img.at<Vec3d>(i,j), img.at<Vec3d>(di,dj), sig);
+                        ve += weight;
+                        new_c += img.at<Vec3d>(di, dj)*weight;
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            smoothed.at<Vec3d>(i,j) = new_c/ve;
+        }
+    }
+
+    Mat smoothed2 = smoothed;
+
+    for(int sn = smoothed.rows, i = 0; i < sn; i++) {
+        for(int sm = smoothed.cols, j = 0; j < sm; j++) {
+
+            // vec2d new_vec(0,0);
+            // vec2d center_vec = tn.vecs[i][j];
+            double sig = 0.3;
+
+            double ve = spatial_weight(0, sig)*similarity_weight(smoothed.at<Vec3d>(i,j), smoothed.at<Vec3d>(i,j), sig);
+            Vec3d new_c = smoothed.at<Vec3d>(i,j)*ve;
+
+            for(double m = -1; m <= 1; m += 2) {
+                double angle = etf.vecs[i][j].perp(m);
+                int di = i, dj = j;
+
+                for(int s = 1; s <= KERNEL_SIZE; s++) {
+                    // cout << "angle " << s*m << " " << angle*180/M_PI << endl;
+                    pair<int, int> d = flow_neighbor(angle*180/M_PI);
+                    
+                    di += d.first;
+                    dj += d.second;
+                    if(di >= 0 && di < smoothed.rows && dj >= 0 && dj < smoothed.cols) {
+                        double weight = spatial_weight(s*m, sig)*similarity_weight(smoothed.at<Vec3d>(i,j), smoothed.at<Vec3d>(di,dj), sig);
+                        ve += weight;
+                        new_c += smoothed.at<Vec3d>(di, dj)*weight;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            smoothed2.at<Vec3d>(i,j) = new_c/ve;
+        }
+    }
+    return smoothed2;
+}
+
+Mat FBL(Mat cur, int num_iterations, mat2d etf) {
+
+    for(int ni = 1; ni <= num_iterations; ni++) {
+        cur = FBL_iteration(cur, etf);
+
+        imshow("FBL "+to_string(ni), cur);
+
+        imwrite("FBL_"+to_string(ni)+"_"+img_name, drawimg64(cur));
+
+    }
+    return cur;
+}
+
 
 /** @function main */
 int main( int argc, char** argv ) {
 
     /// Load an image
     Mat original = imread( argv[1] );
+    img_name = string(argv[1]);
 
     if( !original.data )
     { return -1; }
@@ -310,7 +438,16 @@ int main( int argc, char** argv ) {
 
     // Mat lic = etf.LIC();
     // imshow( "Final", lic );
-    // imwrite("etf_"+string(argv[1]), drawimg64(lic));
+    //imwrite("etf_"+string(argv[1]), drawimg64(lic));
+
+    // ======================
+
+    Mat dcolor;
+    // cvtColor( original, dgray, CV_BGR2GRAY );
+    original.convertTo(dcolor, CV_64FC3);
+    dcolor /= 255;
+    imshow("test", dcolor);
+    Mat smoothed = FBL(dcolor, 5, etf);
 
     waitKey(0);
 }
