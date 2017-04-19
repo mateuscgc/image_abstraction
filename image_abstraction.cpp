@@ -189,7 +189,7 @@ mat2d sobel(Mat src_gray, Mat& mag) {
     mag = Mat(grad_x.rows, grad_x.cols, CV_64FC1);
     magnitude( grad_x, grad_y, mag );
     normalize(mag, mag, 1.0, 0.0, cv::NORM_MINMAX);
-    imshow( "Sobel", mag );
+    // imshow( "Sobel", mag );
 
     mat2d gmap(grad_x, grad_y);
 
@@ -259,11 +259,14 @@ mat2d ETF(const mat2d& t0, int num_iterations, const Mat& mag) {
     for(int ni = 1; ni <= num_iterations; ni++) {
         tni = ETF_iteration(tni, mag);
 
-        Mat lic = tni.LIC();
 
-        imshow("ETF "+to_string(ni), lic);
-        imwrite("ETF_"+to_string(ni)+"_"+img_name, drawimg64(lic));
+        // Mat lic = tni.LIC();
+        // imshow("ETF "+to_string(ni), lic);
+        // imwrite("ETF_"+to_string(ni)+"_"+img_name, drawimg64(lic));
     }
+
+    Mat lic = tni.LIC();
+    imshow("ETF", lic);
     return tni;
 }
 
@@ -281,7 +284,7 @@ mat2d get_init_t(mat2d grad) {
 
     Mat init = grad.LIC();
 
-    imshow("Initial t", init);
+    // imshow("Initial t", init);
 
     return grad;
 }
@@ -395,12 +398,96 @@ Mat FBL(Mat cur, int num_iterations, mat2d etf) {
     for(int ni = 1; ni <= num_iterations; ni++) {
         cur = FBL_iteration(cur, etf);
 
-        imshow("FBL "+to_string(ni), cur);
 
-        imwrite("FBL_"+to_string(ni)+"_"+img_name, drawimg64(cur));
+        // imwrite("FBL_"+to_string(ni)+"_"+img_name, drawimg64(cur));
 
     }
+    imshow("FBL", cur);
     return cur;
+}
+
+struct mcq {
+    Vec3d c;
+    pair<int, int> pos;
+};
+
+struct cmp {
+    int color;
+    cmp(int c) : color(c) {}
+    bool operator () (mcq a, mcq b) {
+        return a.c[color] < b.c[color];
+    }
+};
+
+void set_average_color(mcq* quant, Mat& img, int ini, int end) {
+    Vec3d new_color;
+    // cout << new_color[1] << endl;
+    for(int i = ini; i < end; i++) {
+        new_color += quant[i].c;
+    }
+    new_color /= end-ini;
+    for(int i = ini; i < end; i++) {
+        img.at<Vec3d>(quant[i].pos.first, quant[i].pos.second) = new_color;
+    }
+}
+
+void divaide(mcq* quant, int ini, int end, int remain, Mat &cur) {
+    // cout << remain << endl;
+    if(!remain) {
+        // cout << ini << " " << end << endl;
+        set_average_color(quant, cur, ini, end);
+        return;
+    }
+    double maxi[] = {0,0,0};
+    double mini[] = {1,1,1};
+    for(int i = ini; i < end; i++) {
+        for(int c = 0; c < 3; c++) {
+            maxi[c] = max(maxi[c], quant[i].c[c]);
+            mini[c] = min(mini[c], quant[i].c[c]);
+        }
+    }
+
+    int cur_color = 0;
+    for(int c = 0; c < 3; c++)
+        if(maxi[c]-mini[c] > maxi[cur_color]-mini[cur_color])
+            cur_color = c;
+
+    sort(quant+ini, quant+end, cmp(cur_color));
+
+    int mid = (ini + end)/2;
+    divaide(quant, ini, mid, remain-1, cur);
+    divaide(quant, mid, end, remain-1, cur);
+}
+
+Mat median_cut_quantization(Mat cur, int number_of_colors) {
+    int i;
+    for(i = 0; (1 << i) <= number_of_colors; i++);
+    number_of_colors = (1 << (i-1));
+    int number_of_iterations = i-1;
+    
+    int n = cur.rows*cur.cols;
+    // cout << n << endl;
+    mcq* quant = new mcq[n];
+    // cout << n << endl;
+
+    for(int i = 0; i < cur.rows; i++) {
+        // cout << i << endl;
+        for(int j = 0; j < cur.cols; j++) {
+            mcq aux;
+            aux.c = cur.at<Vec3d>(i,j);
+            aux.pos = make_pair(i, j);
+            quant[i*cur.cols + j] = aux;
+        }
+    }
+
+    divaide(quant, 0, n, number_of_iterations, cur);
+
+    //Define colors
+    // for(int i = 0; i < number_of_colors; i++)
+        // set_average_color(&quant, cur, i*(n/number_of_colors)) 
+    //Set new colors in image
+
+    return cur; 
 }
 
 
@@ -448,6 +535,10 @@ int main( int argc, char** argv ) {
     dcolor /= 255;
     imshow("test", dcolor);
     Mat smoothed = FBL(dcolor, 5, etf);
+
+    Mat quantized = median_cut_quantization(smoothed, 64);
+    imshow("Quantized", quantized);
+    imwrite("Quantized_"+string(argv[1]), drawimg64(quantized));
 
     waitKey(0);
 }
