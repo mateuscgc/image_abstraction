@@ -300,8 +300,8 @@ pair<int, int> flow_neighbor(double angle) {
     return d[closest];
 }
 
-double gaussian(int s, double sig) {
-    return (1/sqrt(2*M_PI*sig))*pow(M_E, -(s*s)/(2*0.58*sig));
+double gaussian(double s, double sig) {
+    return (1/(sqrt(2*M_PI)*sig))*pow(M_E, -(s*s)/(2*(sig*sig)));
 }
 
 double spatial_weight(int s, double sig) {
@@ -490,55 +490,176 @@ Mat median_cut_quantization(Mat cur, int number_of_colors) {
     return cur; 
 }
 
+// double gaussian(int s, double sig) {
+//     return (1/sqrt(2*M_PI*sig))*pow(M_E, -(s*s)/(2*(sig*sig)));
+// }
+
+double dog_filter(int t, double sigc, double p) {
+    double sigs = 1.05*sigc;
+
+    return gaussian(t, sigc) - p*gaussian(t, sigs);
+}
+
+Mat to_binary(const Mat& img, double t) {
+    Mat ans = img.clone();
+    for(int sn = img.rows, i = 0; i < sn; i++) {
+        for(int sm = img.cols, j = 0; j < sm; j++) {
+            ans.at<double>(i,j) = (img.at<double>(i,j) < 0 && (1 + tanh(img.at<double>(i,j)) < t) ? 0 : 1);
+        }
+    }
+    return ans;
+}
+
+Mat FDoG_iteration(const Mat& img, const mat2d& etf) {
+    Mat Hg = img.clone();
+
+    double sigc = 1.0;
+    double p = 0.997;
+    for(int sn = img.rows, i = 0; i < sn; i++) {
+        for(int sm = img.cols, j = 0; j < sm; j++) {
+
+            double weight = dog_filter(0, sigc, p);
+            // cout << "-> " << weight << endl;
+            double H = img.at<double>(i,j)*weight;
+            double total_weight = weight;
+
+            for(double m = -1; m <= 1; m += 2) {
+                double angle = etf.vecs[i][j].perp(m);
+                int di = i, dj = j;
+                for(int t = 1; /*gaussian(t, 1.6*sigc) >= 0.01*(1.6*sigc*1.6*sigc) && */t <= 3; t++) {
+                    // cout << gaussian(t, 1.6*sigc) << " " << t << endl; 
+                    pair<int, int> d = flow_neighbor(angle*180/M_PI);
+                    
+                    di += d.first;
+                    dj += d.second;
+                    if(di >= 0 && di < img.rows && dj >= 0 && dj < img.cols) {
+                        weight = dog_filter(t, sigc, p);
+                        // cout << "> " << weight << endl;
+                        H += img.at<double>(di, dj)*weight;
+                        total_weight += weight;
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            Hg.at<double>(i,j) = H/total_weight;
+        }
+    }
+
+    Mat He = Hg.clone();
+    imshow("Hg", He);
+
+    double sigm = 3.0;
+    for(int sn = Hg.rows, i = 0; i < sn; i++) {
+        for(int sm = Hg.cols, j = 0; j < sm; j++) {
+
+            double weight = gaussian(0, sigm);
+            double H = Hg.at<double>(i,j)*weight;
+            double total_weight = weight;
+
+            for(double m = -1; m <= 1; m += 2) {
+                int di = i, dj = j;
+                for(int s = 1; /*gaussian(s, sigm) >= 0.01*(sigm*sigm) && */s <= 3; s++) {
+                    double angle = etf.vecs[di][dj].angle(m);
+                    pair<int, int> d = flow_neighbor(angle*180/M_PI);
+                    
+                    di += d.first;
+                    dj += d.second;
+                    if(di >= 0 && di < Hg.rows && dj >= 0 && dj < Hg.cols) {
+                        weight = gaussian(s, sigm);
+                        H += Hg.at<double>(di, dj)*weight;
+                        total_weight += weight;
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            He.at<double>(i,j) = H/total_weight;
+        }
+    }
+    imshow("He", He);
+
+
+    Mat lines = to_binary(He, 0.997);
+    imshow("Binary", lines);
+
+    return lines;
+}
+
+Mat FDoG(const Mat& input, int num_iterations, mat2d etf) {
+
+    Mat cur_input = input.clone(), cur_lines;
+    for(int ni = 1; ni <= num_iterations; ni++) {
+        
+        cur_lines = FDoG_iteration(cur_input, etf);
+
+        imshow("FDoG_"+to_string(ni)+"_"+img_name, cur_lines);
+        // imwrite("FDoG_"+to_string(ni)+"_"+img_name, drawimg64(cur_lines));
+
+        cur_input = min(input, cur_lines);
+        imshow("Humm"+to_string(ni), cur_input);
+    }
+    // imshow("FBL", cur);
+    return cur_lines;
+}
 
 /** @function main */
 int main( int argc, char** argv ) {
 
     /// Load an image
-    Mat original = imread( argv[1] );
     img_name = string(argv[1]);
+    Mat original = imread( img_name );
+    imshow( "Original", original );
 
-    if( !original.data )
-    { return -1; }
-
-    /// Create windows
-    namedWindow( "Original", CV_WINDOW_AUTOSIZE );
+    if( !original.data ) { return -1; }
 
     Mat gray = preprocess (original);
+    
+    // ========== ETF ==========
     Mat mag;
     mat2d grad = sobel(gray, mag);
     mat2d t0 = get_init_t(grad);
-
     mat2d etf = ETF(t0, 3, mag);
 
-    // for(int n = etf.vecs.size(), i = 0; i < n; i++) {
-    //     for(int n = etf.vecs[i].size(), j = 0; j < n; j++) {
-    //         cout << "(" << etf.vecs[i][j].x << ",  " << etf.vecs[i][j].y << ") ";
-    //     }
-    //     cout << endl;
-    // }
-
-    // Mat etfa = etf.get_mat_angle();
-    // imshow("ETF ANGLE", etfa);
-
-    imshow( "Original", original );
-
-    // Mat lic = etf.LIC();
+    // show ETF with LIC
+    Mat lic = etf.LIC();
     // imshow( "Final", lic );
-    //imwrite("etf_"+string(argv[1]), drawimg64(lic));
+    imwrite("etf_"+string(argv[1]), drawimg64(lic));
 
-    // ======================
-
+    // ========== FBL ==========
     Mat dcolor;
-    // cvtColor( original, dgray, CV_BGR2GRAY );
     original.convertTo(dcolor, CV_64FC3);
     dcolor /= 255;
-    imshow("test", dcolor);
     Mat smoothed = FBL(dcolor, 5, etf);
 
+    // ========== FBL Quantization ==========
     Mat quantized = median_cut_quantization(smoothed, 64);
     imshow("Quantized", quantized);
     imwrite("Quantized_"+string(argv[1]), drawimg64(quantized));
+
+    // ========== FDoG Quantization ==========
+    Mat dgray;
+    gray.convertTo(dgray, CV_64FC1);
+    dgray /= 255;
+    Mat abstract_lines = FDoG(dgray, 3, etf);
+    imwrite("Lines_"+string(argv[1]), drawimg64(abstract_lines));
+
+    // Mat final_lines;
+    // abstract_lines.convertTo(final_lines, CV_64FC3);
+    // cvtColor( final_lines, abstract_lines, CV_GRAY2BGR );
+
+    Mat final = quantized.clone();
+    for(int sn = final.rows, i = 0; i < sn; i++) {
+        for(int sm = final.cols, j = 0; j < sm; j++) {
+            if(abstract_lines.at<double>(i,j) == 0)
+                final.at<Vec3d>(i,j) = Vec3d(0,0,0);
+        }
+    }
+    imshow("Final", final);
+    imwrite("Final_"+string(argv[1]), drawimg64(final));
+
 
     waitKey(0);
 }
